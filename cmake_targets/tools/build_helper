@@ -42,7 +42,7 @@ KERNEL_VERSION=$(uname -r | cut -d '.' -f1)
 KERNEL_MAJOR=$(uname -r | cut -d '.' -f2)
 
 #check if we run inside a container
-IS_CONTAINER=`grep -E -c "docker|podman|kubepods|libpod|buildah" /proc/self/cgroup || true`
+IS_CONTAINER=`egrep -c "docker|podman|kubepods|libpod|buildah" /proc/self/cgroup || true`
 #sudo is not needed when we are root
 if [ "$UID" = 0 ]
 then
@@ -107,7 +107,6 @@ check_supported_distribution() {
         "ubuntu22.04") return 0 ;;
         "ubuntu20.04") return 0 ;;
         "debian11")    return 0 ;;
-        "fedora41")    return 0 ;;
         "fedora40")    return 0 ;;
         "rhel8.2")     return 0 ;;
         "rhel8.3")     return 0 ;;
@@ -122,7 +121,6 @@ check_supported_distribution() {
         "rhel9.2")     return 0 ;;
         "rhel9.3")     return 0 ;;
         "rhel9.4")     return 0 ;;
-        "rhel9.5")     return 0 ;;
         "centos9")     return 0 ;; # CentOS stream
         "rocky8.7")    return 0 ;;
         "rocky8.8")    return 0 ;;
@@ -130,7 +128,6 @@ check_supported_distribution() {
         "rocky9.1")    return 0 ;;
         "rocky9.2")    return 0 ;;
         "rocky9.3")    return 0 ;;
-        "rocky9.4")    return 0 ;;
     esac
     return 1
 }
@@ -189,7 +186,7 @@ check_warnings() {
   #we look for 'warning:' in the compilation log file
   #this is how gcc starts a warning
   #this is not perfect, we may get false positive
-  warning_count=`grep "warning:" "$1" | grep -E -v "jobserver unavailable|disabling jobserver mode" | wc -l`
+  warning_count=`grep "warning:" "$1" | egrep -v "jobserver unavailable|disabling jobserver mode" | wc -l`
   if [ $warning_count -gt 0 ]; then
     echo_error "WARNING: $warning_count warnings. See $1"
   fi
@@ -225,7 +222,7 @@ compilations() {
     ret=$?
   } > $dlog/$logfile 2>&1
   # Print the errors and warnings for CI purposes
-  grep -E -A3 "warning:|error:" $dlog/$logfile || true
+  egrep -A3 "warning:|error:" $dlog/$logfile || true
   check_warnings "$dlog/$logfile"
   if [[ $ret -eq 0 ]]; then
      echo_success "$targets compiled"
@@ -288,7 +285,7 @@ install_usrp_uhd_driver_from_source(){
     git diff
     mkdir -p host/build
     cd host/build || true
-    $CMAKE ../ -GNinja -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
+    $CMAKE ../ -GNinja
     echo "Compiling UHD"
     ninja
     $SUDO ninja install
@@ -396,6 +393,45 @@ install_usrp_uhd_driver() {
       else
           $SUDO uhd_images_downloader -i $1
       fi
+    fi
+}
+
+install_antsdr_driver_from_source(){
+    antsdr_install_log=$OPENAIR_DIR/cmake_targets/log/antsdr_install_log.txt
+    echo_info "\nInstalling Antsdr driver from sources. The log file for Antsdr driver installation is here: $antsdr_install_log "
+    (
+    cd /tmp
+    echo "Downloading Antsdr driver"
+    rm -rf /tmp/antsdr
+    git clone https://github.com/MicroPhase/antsdr_uhd.git
+    cd antsdr_uhd/host
+    mkdir build
+    cd build
+    $CMAKE -DENABLE_X400=OFF -DENABLE_N320=OFF -DENABLE_X300=OFF -DENABLE_USRP2=OFF -DENABLE_USRP1=OFF -DENABLE_N300=OFF -DENABLE_E320=OFF -DENABLE_E300=OFF ../
+    echo "Compiling Antsdr driver"
+    make -j$(nproc)
+    $SUDO make install
+    $SUDO ldconfig
+    echo "Downloading FPGA and firmware images"
+    cd /tmp/antsdr_uhd/
+    $SUDO $INSTALLER -y install wget
+    wget --tries=3 --retry-connrefused  https://github.com/MicroPhase/antsdr_uhd/releases/download/v1.0/antsdr_u220_ad9361.bin
+    $SUDO /usr/local/bin/uhd_images_downloader -t b2*
+    mv /usr/local/share/uhd/images/usrp_b210_fpga.bin /usr/local/share/uhd/images/usrp_b210_fpga.bin.old
+    mv antsdr_u220_ad9361.bin /usr/local/share/uhd/images/usrp_b210_fpga.bin
+    ) >& $antsdr_install_log
+}
+     
+check_install_antsdr_driver(){
+    if [[ "$OS_DISTRO" == "ubuntu" ]]; then  
+        $SUDO apt-get install -y autoconf automake build-essential ccache cmake cpufrequtils doxygen ethtool \
+        g++ git inetutils-tools libboost-all-dev libncurses5 libncurses5-dev libusb-1.0-0 libusb-1.0-0-dev \
+        libusb-dev python3-dev python3-mako python3-numpy python3-requests python3-scipy python3-setuptools \
+        python3-ruamel.yaml
+    # elif [[ "$OS_BASEDISTRO" == "fedora" ]]; then
+    #     install_antsdr_driver_from_source
+    else
+        echo_error "Antsdr Installer for OAI does not support automatic build. Install Antsdr compiling sources manually from Antsdr website"
     fi
 }
 
@@ -592,9 +628,8 @@ check_install_oai_software() {
 	libtool  \
 	patch \
 	openssl \
-	zlib1g-dev \
-	xxd \
-	libyaml-cpp-dev
+        zlib1g-dev \
+        xxd
 
   elif [[ "$OS_BASEDISTRO" == "fedora" ]]; then
     if [[ "$OS_DISTRO" == "rhel" ]] || [[ "$OS_DISTRO" == "centos" ]] || [[ "$OS_DISTRO" == "rocky" ]]; then
@@ -614,11 +649,13 @@ check_install_oai_software() {
       git \
       pkgconfig \
       libconfig-devel \
+      libffi-devel \
       lksctp-tools \
       lksctp-tools-devel \
       libtool \
       ninja-build \
       make \
+      openssl \
       openssl-devel \
       patch \
       readline-devel \
@@ -627,8 +664,7 @@ check_install_oai_software() {
       blas \
       blas-devel \
       vim-common \
-      zlib-devel \
-      yaml-cpp-devel
+      zlib-devel
   fi
 
     install_asn1c_from_source $1
@@ -673,8 +709,8 @@ install_simde_from_source(){
     if [[ -v SIMDE_VERSION ]]; then
       git checkout -f $SIMDE_VERSION
     else
-      # At time of writing, last working commit for OAI: 1a09d3bc
-      git checkout 1a09d3bc9de47c4d9a5daa23eb753d5322748201
+      # At time of writing, last working commit for OAI
+      git checkout 389f360a66d4a3bec62b7d71ad8be877487809ba
     fi
     # Showing which version is used
     git log -n1

@@ -46,7 +46,7 @@ BUILD_DOXYGEN=0
 DISABLE_HARDWARE_DEPENDENCY="False"
 CMAKE_BUILD_TYPE="RelWithDebInfo"
 CMAKE_CMD="$CMAKE"
-OPTIONAL_LIBRARIES="telnetsrv enbscope uescope nrscope ldpc_cuda ldpc_t2 websrv oai_iqplayer imscope"
+OPTIONAL_LIBRARIES="telnetsrv enbscope uescope nrscope ldpc_cuda ldpc_t2 websrv oai_iqplayer"
 TARGET_LIST=""
 
 function print_help() {
@@ -93,24 +93,37 @@ Options:
 --UE-gen-nvram [output path]
    Specify gen_nvram_path (default \"$gen_nvram_path\")
 -w | --hardware
-   USRP, BLADERF, LMSSDR, IRIS, SIMU, AW2SORI, AERIAL, None (Default)
+   USRP, ANTSDR, BLADERF, LMSSDR, IRIS, SIMU, AW2SORI, AERIAL, None (Default)
    Adds this RF board support (in external packages installation and in compilation)
 -t | --transport
    Selects the transport protocol type, options: None, Ethernet, benetel4g, benetel5g, oran_fhlib_5g
 -P | --phy_simulators
    Makes the unitary tests Layer 1 simulators
+-S | --core_simulators
+   Makes the core security features unitary simulators
 -s | --check
    runs a set of auto-tests based on simulators and several compilation tests
 --run-group 
    runs only specified test cases specified here. This flag is only valid with -s
 -V | --vcd
    Adds a debgging facility to the binary files: GUI with major internal synchronization events
+-x | --xforms
+   Will compile with software oscilloscope features
 --verbose-compile
    Shows detailed compilation instructions in makefile
 --build-doxygen
    Builds doxygen based documentation.
+--build-coverity-scan
+   Builds Coverity-Scan objects for upload
+--disable-deadline
+   Disables deadline scheduler of Linux kernel (>=3.14.x).
 --trace-asn1c-enc-dec
    Output asn1c logging traces via OAI logging system.
+--enable-deadline
+   Enable deadline scheduler of Linux kernel (>=3.14.x). 
+--disable-cpu-affinity
+   Disables CPU Affinity between UHD/TX/RX Threads (Valid only when deadline scheduler is disabled). By defaulT, CPU Affinity is enabled when not using deadline scheduler. It is enabled only with >2 CPUs. For eNB, CPU_0-> Device library (UHD), CPU_1->TX Threads, CPU_2...CPU_MAX->Rx Threads. For UE, CPU_0->Device Library(UHD), CPU_1..CPU_MAX -> All the UE threads
+--enable-cpu-affinity
 --enable-LTTNG
    Enable LTTNG log. While lttng is enabled, T-Tracer will be disabled
 --disable-T-Tracer
@@ -133,6 +146,8 @@ Options:
    Disable AVX512 intrinsics whatever processor capability is
 --noavx2
    Disable AVX2 intrinsics whatever processor capability is
+-k | --skip-shared-libraries
+   Skip build for shared libraries to reduce compilation time when building frequently for debugging purposes
 --ninja
   Tell cmake to use the Ninja build system. Without, will generate make files
 --sanitize
@@ -263,6 +278,9 @@ function main() {
                     TARGET_LIST="$TARGET_LIST oai_${2,,}devif" # ,, makes lowercase
                     CMAKE_CMD="$CMAKE_CMD -DOAI_$2=ON"
                     ;;
+                "ANTSDR")
+                     HW="OAI_"$2
+                    ;;
                 "SIMU")
                     HW="OAI_"$2
                     TARGET_LIST="$TARGET_LIST rfsimulator"
@@ -323,6 +341,9 @@ function main() {
        -V | --vcd)
             echo_info "Setting gtk-wave output"
             CMAKE_CMD="$CMAKE_CMD -DENABLE_VCD_FIFO=True"
+            shift;;
+       -x | --xforms)
+            echo_info "Will generate the software oscilloscope features"
             shift;;
        --verbose-compile)
             VERBOSE_COMPILE=1
@@ -450,6 +471,11 @@ function main() {
         install_usrp_uhd_driver $UHD_IMAGES_DIR
       fi
     fi
+    if [ "$HW" == "OAI_ANTSDR" ] ; then
+      echo_info "installing packages for ANTSDR support"
+      check_install_antsdr_driver
+      install_antsdr_driver_from_source $UHD_IMAGES_DIR
+    fi
     if [ "$HW" == "OAI_BLADERF" ] ; then
       echo_info "installing packages for BLADERF support"
       check_install_bladerf_driver
@@ -479,7 +505,7 @@ function main() {
     # add some default libraries that should always be built
     # for eNB, gNB, UEs, simulators
     if [[ $gNB == 1 || $eNB == 1 || $UE == 1 || $nrUE == 1 || $SIMUS_PHY == 1 || $RU == 1 ]]; then
-      TARGET_LIST="$TARGET_LIST params_libconfig coding rfsimulator dfts params_yaml"
+      TARGET_LIST="$TARGET_LIST params_libconfig coding rfsimulator dfts"
     fi
 
     mkdir -p $DIR/$BUILD_DIR/build

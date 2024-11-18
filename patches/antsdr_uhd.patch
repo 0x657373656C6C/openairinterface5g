@@ -1,0 +1,431 @@
+diff --git a/cmake_targets/build_oai b/cmake_targets/build_oai
+old mode 100755
+new mode 100644
+index e2aa1384d6..d692405a49
+--- a/cmake_targets/build_oai
++++ b/cmake_targets/build_oai
+@@ -46,7 +46,7 @@ BUILD_DOXYGEN=0
+ DISABLE_HARDWARE_DEPENDENCY="False"
+ CMAKE_BUILD_TYPE="RelWithDebInfo"
+ CMAKE_CMD="$CMAKE"
+-OPTIONAL_LIBRARIES="telnetsrv enbscope uescope nrscope ldpc_cuda ldpc_t2 websrv oai_iqplayer imscope"
++OPTIONAL_LIBRARIES="telnetsrv enbscope uescope nrscope ldpc_cuda ldpc_t2 websrv oai_iqplayer"
+ TARGET_LIST=""
+ 
+ function print_help() {
+@@ -93,24 +93,37 @@ Options:
+ --UE-gen-nvram [output path]
+    Specify gen_nvram_path (default \"$gen_nvram_path\")
+ -w | --hardware
+-   USRP, BLADERF, LMSSDR, IRIS, SIMU, AW2SORI, AERIAL, None (Default)
++   USRP, ANTSDR, BLADERF, LMSSDR, IRIS, SIMU, AW2SORI, AERIAL, None (Default)
+    Adds this RF board support (in external packages installation and in compilation)
+ -t | --transport
+    Selects the transport protocol type, options: None, Ethernet, benetel4g, benetel5g, oran_fhlib_5g
+ -P | --phy_simulators
+    Makes the unitary tests Layer 1 simulators
++-S | --core_simulators
++   Makes the core security features unitary simulators
+ -s | --check
+    runs a set of auto-tests based on simulators and several compilation tests
+ --run-group 
+    runs only specified test cases specified here. This flag is only valid with -s
+ -V | --vcd
+    Adds a debgging facility to the binary files: GUI with major internal synchronization events
++-x | --xforms
++   Will compile with software oscilloscope features
+ --verbose-compile
+    Shows detailed compilation instructions in makefile
+ --build-doxygen
+    Builds doxygen based documentation.
++--build-coverity-scan
++   Builds Coverity-Scan objects for upload
++--disable-deadline
++   Disables deadline scheduler of Linux kernel (>=3.14.x).
+ --trace-asn1c-enc-dec
+    Output asn1c logging traces via OAI logging system.
++--enable-deadline
++   Enable deadline scheduler of Linux kernel (>=3.14.x). 
++--disable-cpu-affinity
++   Disables CPU Affinity between UHD/TX/RX Threads (Valid only when deadline scheduler is disabled). By defaulT, CPU Affinity is enabled when not using deadline scheduler. It is enabled only with >2 CPUs. For eNB, CPU_0-> Device library (UHD), CPU_1->TX Threads, CPU_2...CPU_MAX->Rx Threads. For UE, CPU_0->Device Library(UHD), CPU_1..CPU_MAX -> All the UE threads
++--enable-cpu-affinity
+ --enable-LTTNG
+    Enable LTTNG log. While lttng is enabled, T-Tracer will be disabled
+ --disable-T-Tracer
+@@ -133,6 +146,8 @@ Options:
+    Disable AVX512 intrinsics whatever processor capability is
+ --noavx2
+    Disable AVX2 intrinsics whatever processor capability is
++-k | --skip-shared-libraries
++   Skip build for shared libraries to reduce compilation time when building frequently for debugging purposes
+ --ninja
+   Tell cmake to use the Ninja build system. Without, will generate make files
+ --sanitize
+@@ -263,6 +278,9 @@ function main() {
+                     TARGET_LIST="$TARGET_LIST oai_${2,,}devif" # ,, makes lowercase
+                     CMAKE_CMD="$CMAKE_CMD -DOAI_$2=ON"
+                     ;;
++                "ANTSDR")
++                     HW="OAI_"$2
++                    ;;
+                 "SIMU")
+                     HW="OAI_"$2
+                     TARGET_LIST="$TARGET_LIST rfsimulator"
+@@ -324,6 +342,9 @@ function main() {
+             echo_info "Setting gtk-wave output"
+             CMAKE_CMD="$CMAKE_CMD -DENABLE_VCD_FIFO=True"
+             shift;;
++       -x | --xforms)
++            echo_info "Will generate the software oscilloscope features"
++            shift;;
+        --verbose-compile)
+             VERBOSE_COMPILE=1
+             echo_info "Will compile with verbose instructions"
+@@ -450,6 +471,11 @@ function main() {
+         install_usrp_uhd_driver $UHD_IMAGES_DIR
+       fi
+     fi
++    if [ "$HW" == "OAI_ANTSDR" ] ; then
++      echo_info "installing packages for ANTSDR support"
++      check_install_antsdr_driver
++      install_antsdr_driver_from_source $UHD_IMAGES_DIR
++    fi
+     if [ "$HW" == "OAI_BLADERF" ] ; then
+       echo_info "installing packages for BLADERF support"
+       check_install_bladerf_driver
+@@ -479,7 +505,7 @@ function main() {
+     # add some default libraries that should always be built
+     # for eNB, gNB, UEs, simulators
+     if [[ $gNB == 1 || $eNB == 1 || $UE == 1 || $nrUE == 1 || $SIMUS_PHY == 1 || $RU == 1 ]]; then
+-      TARGET_LIST="$TARGET_LIST params_libconfig coding rfsimulator dfts params_yaml"
++      TARGET_LIST="$TARGET_LIST params_libconfig coding rfsimulator dfts"
+     fi
+ 
+     mkdir -p $DIR/$BUILD_DIR/build
+diff --git a/cmake_targets/tools/build_helper b/cmake_targets/tools/build_helper
+old mode 100755
+new mode 100644
+index dfb0b5a95e..0fd1c8255c
+--- a/cmake_targets/tools/build_helper
++++ b/cmake_targets/tools/build_helper
+@@ -42,7 +42,7 @@ KERNEL_VERSION=$(uname -r | cut -d '.' -f1)
+ KERNEL_MAJOR=$(uname -r | cut -d '.' -f2)
+ 
+ #check if we run inside a container
+-IS_CONTAINER=`grep -E -c "docker|podman|kubepods|libpod|buildah" /proc/self/cgroup || true`
++IS_CONTAINER=`egrep -c "docker|podman|kubepods|libpod|buildah" /proc/self/cgroup || true`
+ #sudo is not needed when we are root
+ if [ "$UID" = 0 ]
+ then
+@@ -107,7 +107,6 @@ check_supported_distribution() {
+         "ubuntu22.04") return 0 ;;
+         "ubuntu20.04") return 0 ;;
+         "debian11")    return 0 ;;
+-        "fedora41")    return 0 ;;
+         "fedora40")    return 0 ;;
+         "rhel8.2")     return 0 ;;
+         "rhel8.3")     return 0 ;;
+@@ -122,7 +121,6 @@ check_supported_distribution() {
+         "rhel9.2")     return 0 ;;
+         "rhel9.3")     return 0 ;;
+         "rhel9.4")     return 0 ;;
+-        "rhel9.5")     return 0 ;;
+         "centos9")     return 0 ;; # CentOS stream
+         "rocky8.7")    return 0 ;;
+         "rocky8.8")    return 0 ;;
+@@ -130,7 +128,6 @@ check_supported_distribution() {
+         "rocky9.1")    return 0 ;;
+         "rocky9.2")    return 0 ;;
+         "rocky9.3")    return 0 ;;
+-        "rocky9.4")    return 0 ;;
+     esac
+     return 1
+ }
+@@ -189,7 +186,7 @@ check_warnings() {
+   #we look for 'warning:' in the compilation log file
+   #this is how gcc starts a warning
+   #this is not perfect, we may get false positive
+-  warning_count=`grep "warning:" "$1" | grep -E -v "jobserver unavailable|disabling jobserver mode" | wc -l`
++  warning_count=`grep "warning:" "$1" | egrep -v "jobserver unavailable|disabling jobserver mode" | wc -l`
+   if [ $warning_count -gt 0 ]; then
+     echo_error "WARNING: $warning_count warnings. See $1"
+   fi
+@@ -225,7 +222,7 @@ compilations() {
+     ret=$?
+   } > $dlog/$logfile 2>&1
+   # Print the errors and warnings for CI purposes
+-  grep -E -A3 "warning:|error:" $dlog/$logfile || true
++  egrep -A3 "warning:|error:" $dlog/$logfile || true
+   check_warnings "$dlog/$logfile"
+   if [[ $ret -eq 0 ]]; then
+      echo_success "$targets compiled"
+@@ -288,7 +285,7 @@ install_usrp_uhd_driver_from_source(){
+     git diff
+     mkdir -p host/build
+     cd host/build || true
+-    $CMAKE ../ -GNinja -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
++    $CMAKE ../ -GNinja
+     echo "Compiling UHD"
+     ninja
+     $SUDO ninja install
+@@ -399,6 +396,45 @@ install_usrp_uhd_driver() {
+     fi
+ }
+ 
++install_antsdr_driver_from_source(){
++    antsdr_install_log=$OPENAIR_DIR/cmake_targets/log/antsdr_install_log.txt
++    echo_info "\nInstalling Antsdr driver from sources. The log file for Antsdr driver installation is here: $antsdr_install_log "
++    (
++    cd /tmp
++    echo "Downloading Antsdr driver"
++    rm -rf /tmp/antsdr
++    git clone https://github.com/MicroPhase/antsdr_uhd.git
++    cd antsdr_uhd/host
++    mkdir build
++    cd build
++    $CMAKE -DENABLE_X400=OFF -DENABLE_N320=OFF -DENABLE_X300=OFF -DENABLE_USRP2=OFF -DENABLE_USRP1=OFF -DENABLE_N300=OFF -DENABLE_E320=OFF -DENABLE_E300=OFF ../
++    echo "Compiling Antsdr driver"
++    make -j$(nproc)
++    $SUDO make install
++    $SUDO ldconfig
++    echo "Downloading FPGA and firmware images"
++    cd /tmp/antsdr_uhd/
++    $SUDO $INSTALLER -y install wget
++    wget --tries=3 --retry-connrefused  https://github.com/MicroPhase/antsdr_uhd/releases/download/v1.0/antsdr_u220_ad9361.bin
++    $SUDO /usr/local/bin/uhd_images_downloader -t b2*
++    mv /usr/local/share/uhd/images/usrp_b210_fpga.bin /usr/local/share/uhd/images/usrp_b210_fpga.bin.old
++    mv antsdr_u220_ad9361.bin /usr/local/share/uhd/images/usrp_b210_fpga.bin
++    ) >& $antsdr_install_log
++}
++     
++check_install_antsdr_driver(){
++    if [[ "$OS_DISTRO" == "ubuntu" ]]; then  
++        $SUDO apt-get install -y autoconf automake build-essential ccache cmake cpufrequtils doxygen ethtool \
++        g++ git inetutils-tools libboost-all-dev libncurses5 libncurses5-dev libusb-1.0-0 libusb-1.0-0-dev \
++        libusb-dev python3-dev python3-mako python3-numpy python3-requests python3-scipy python3-setuptools \
++        python3-ruamel.yaml
++    # elif [[ "$OS_BASEDISTRO" == "fedora" ]]; then
++    #     install_antsdr_driver_from_source
++    else
++        echo_error "Antsdr Installer for OAI does not support automatic build. Install Antsdr compiling sources manually from Antsdr website"
++    fi
++}
++
+ install_bladerf_driver_from_source(){
+     bladerf_install_log=$OPENAIR_DIR/cmake_targets/log/bladerf_install_log.txt
+     echo_info "\nInstalling BladeRF driver from sources. The log file for BladeRF driver installation is here: $bladerf_install_log "
+@@ -592,9 +628,8 @@ check_install_oai_software() {
+ 	libtool  \
+ 	patch \
+ 	openssl \
+-	zlib1g-dev \
+-	xxd \
+-	libyaml-cpp-dev
++        zlib1g-dev \
++        xxd
+ 
+   elif [[ "$OS_BASEDISTRO" == "fedora" ]]; then
+     if [[ "$OS_DISTRO" == "rhel" ]] || [[ "$OS_DISTRO" == "centos" ]] || [[ "$OS_DISTRO" == "rocky" ]]; then
+@@ -614,11 +649,13 @@ check_install_oai_software() {
+       git \
+       pkgconfig \
+       libconfig-devel \
++      libffi-devel \
+       lksctp-tools \
+       lksctp-tools-devel \
+       libtool \
+       ninja-build \
+       make \
++      openssl \
+       openssl-devel \
+       patch \
+       readline-devel \
+@@ -627,8 +664,7 @@ check_install_oai_software() {
+       blas \
+       blas-devel \
+       vim-common \
+-      zlib-devel \
+-      yaml-cpp-devel
++      zlib-devel
+   fi
+ 
+     install_asn1c_from_source $1
+@@ -673,8 +709,8 @@ install_simde_from_source(){
+     if [[ -v SIMDE_VERSION ]]; then
+       git checkout -f $SIMDE_VERSION
+     else
+-      # At time of writing, last working commit for OAI: 1a09d3bc
+-      git checkout 1a09d3bc9de47c4d9a5daa23eb753d5322748201
++      # At time of writing, last working commit for OAI
++      git checkout 389f360a66d4a3bec62b7d71ad8be877487809ba
+     fi
+     # Showing which version is used
+     git log -n1
+diff --git a/docker/Dockerfile.base.ubuntu22 b/docker/Dockerfile.base.ubuntu22
+index 60e2aad8ab..dc6916a026 100644
+--- a/docker/Dockerfile.base.ubuntu22
++++ b/docker/Dockerfile.base.ubuntu22
+@@ -28,13 +28,13 @@
+ 
+ FROM ubuntu:jammy AS ran-base
+ ARG NEEDED_GIT_PROXY
+-ARG TARGETARCH
+ ENV DEBIAN_FRONTEND=noninteractive
+ ENV TZ=Europe/Paris
+-ENV BUILD_UHD_FROM_SOURCE=True
+-ENV UHD_VERSION=4.4.0.0
++# ENV BUILD_UHD_FROM_SOURCE=True
++# ENV UHD_VERSION=4.4.0.0
+ 
+ #install developers pkg/repo
++#use gcc-12 to avoid problems of default gcc-11 in FlexRIC
+ RUN apt-get update && \
+     DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes && \
+     DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+@@ -42,7 +42,6 @@ RUN apt-get update && \
+        build-essential \
+        psmisc \
+        git \
+-       #use gcc-12 to avoid problems of default gcc-11 in FlexRIC
+        gcc-12 \
+        g++-12 \
+        xxd \
+@@ -59,7 +58,7 @@ RUN apt-get update && \
+ # Add "Tini - A tiny but valid init for containers", https://github.com/krallin/tini
+ # it will be copied into target containers, to print exit numbers and handle signals properly
+ ENV TINI_VERSION=v0.19.0
+-ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-${TARGETARCH} /tini
++ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
+ RUN chmod +x /tini
+ 
+ # In some network environments, GIT proxy is required
+@@ -81,4 +80,4 @@ COPY oaienv .
+ RUN /bin/sh oaienv && \ 
+     cd cmake_targets && \
+     mkdir -p log && \
+-    ./build_oai -I -w USRP --install-optional-packages
++    ./build_oai -I -w ANTSDR --install-optional-packages
+diff --git a/docker/Dockerfile.build.ubuntu22 b/docker/Dockerfile.build.ubuntu22
+index 9ee0b20158..5a5d88f520 100644
+--- a/docker/Dockerfile.build.ubuntu22
++++ b/docker/Dockerfile.build.ubuntu22
+@@ -28,9 +28,6 @@
+ FROM ran-base:latest AS ran-build
+ ARG BUILD_OPTION
+ 
+-ARG E2AP_VERSION=E2AP_V3
+-ARG KPM_VERSION=KPM_V3_00
+-
+ RUN rm -Rf /oai-ran
+ WORKDIR /oai-ran
+ COPY . .
+@@ -42,8 +39,8 @@ RUN /bin/sh oaienv && \
+     ./build_oai -c --ninja \
+       --eNB --gNB --RU --UE --nrUE \
+       --build-lib "telnetsrv enbscope uescope nrscope" \
+-      -w USRP -t Ethernet \
+-      --build-e2 --cmake-opt -DXAPP_MULTILANGUAGE=OFF --cmake-opt -DKPM_VERSION=$KPM_VERSION --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
++      -w ANTSDR -t Ethernet \
++      --build-e2 --cmake-opt -DXAPP_MULTILANGUAGE=OFF \
+       --noavx512 \
+       --cmake-opt -DCMAKE_C_FLAGS="-Werror" --cmake-opt -DCMAKE_CXX_FLAGS="-Werror" $BUILD_OPTION && \
+     # Mainly to see if the sanitize option was perfectly executed
+@@ -51,15 +48,3 @@ RUN /bin/sh oaienv && \
+     ldd ran_build/build/*softmodem* ran_build/build/nr-cuup ran_build/build/oairu && \
+     echo "---- ldd on shared libraries ----" && \
+     ldd ran_build/build/*.so
+-
+-## Build FlexRIC for SM Models
+-RUN mkdir -p openair2/E2AP/flexric/build && \
+-    cd openair2/E2AP/flexric/build && \
+-    cmake -GNinja -DCMAKE_BUILD_TYPE=Release \
+-          -DXAPP_MULTILANGUAGE=OFF \
+-          -DKPM_VERSION=$KPM_VERSION \
+-          -DE2AP_VERSION=$E2AP_VERSION \
+-          -DCMAKE_C_COMPILER=gcc-12 \
+-          -DCMAKE_CXX_COMPILER=g++-12 .. && \
+-    ninja && \
+-    ninja install
+diff --git a/docker/Dockerfile.eNB.ubuntu22 b/docker/Dockerfile.eNB.ubuntu22
+index 44797cd7f5..5ed5b27074 100644
+--- a/docker/Dockerfile.eNB.ubuntu22
++++ b/docker/Dockerfile.eNB.ubuntu22
+@@ -104,7 +104,7 @@ COPY --from=enb-build \
+ 
+ # Now we are copying from builder-image the UHD files.
+ COPY --from=enb-base /usr/local/bin/uhd_find_devices /usr/local/bin
+-COPY --from=enb-base /usr/local/lib/libuhd.so.4.4.0 /usr/local/lib
++COPY --from=enb-base /usr/local/lib/libuhd.so.4.1.0 /usr/local/lib
+ COPY --from=enb-base /usr/local/lib/uhd/utils/uhd_images_downloader.py /opt/oai-enb/bin
+ 
+ RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai_device.so" && \
+@@ -121,7 +121,7 @@ RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai
+         /usr/local/lib/liboai_iqplayer.so \
+         /usr/local/lib/libtelnetsrv.so \
+         /usr/local/lib/libtelnetsrv_enb.so \
+-        /usr/local/lib/libuhd.so.4.4.0
++        /usr/local/lib/libuhd.so.4.1.0
+ 
+ WORKDIR /opt/oai-enb
+ 
+diff --git a/docker/Dockerfile.gNB.ubuntu22 b/docker/Dockerfile.gNB.ubuntu22
+index 8d154eeb13..bb22f2d8db 100644
+--- a/docker/Dockerfile.gNB.ubuntu22
++++ b/docker/Dockerfile.gNB.ubuntu22
+@@ -63,8 +63,7 @@ RUN apt-get update && \
+         python3 \
+         python3-six \
+         python3-requests \
+-        libusb-1.0-0 \
+-        libyaml-cpp-dev && \
++        libusb-1.0-0 && \
+ # if the --sanitize option was used to build, additional packages are required
+     /bin/bash -c 'if [[ "$BUILD_OPTION" = "--sanitize" ]]; then DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+         #libasan5 \ # see below
+@@ -94,15 +93,13 @@ COPY --from=gnb-build \
+     /oai-ran/cmake_targets/ran_build/build/libldpc*.so \
+     /oai-ran/cmake_targets/ran_build/build/libtelnetsrv.so \
+     /oai-ran/cmake_targets/ran_build/build/libtelnetsrv_ci.so \
+-    /oai-ran/cmake_targets/ran_build/build/libparams_yaml.so \
+     /usr/local/lib/
+ 
+ # Now we are copying from builder-image the UHD files.
+ COPY --from=gnb-base /usr/local/bin/uhd_find_devices /usr/local/bin
+-COPY --from=gnb-base /usr/local/lib/libuhd.so.4.4.0 /usr/local/lib
++COPY --from=gnb-base /usr/local/lib/libuhd.so.4.1.0 /usr/local/lib
+ COPY --from=gnb-base /usr/local/lib/uhd/utils/uhd_images_downloader.py /opt/oai-gnb/bin
+-## Copy E2 SM models
+-COPY --from=gnb-build /usr/local/lib/flexric /usr/local/lib/flexric
++COPY --from=gnb-base /usr/local/share/uhd/images /usr/local/share/uhd/images
+ 
+ RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai_device.so" && \
+     ldconfig && \
+@@ -118,7 +115,7 @@ RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai
+         /usr/local/lib/libldpc*.so \
+         /usr/local/lib/libtelnetsrv.so \
+         /usr/local/lib/libtelnetsrv_ci.so \
+-        /usr/local/lib/libuhd.so.4.4.0
++        /usr/local/lib/libuhd.so.4.1.0
+ 
+ WORKDIR /opt/oai-gnb
+ #EXPOSE 2152/udp  # S1U, GTP/UDP
+@@ -130,4 +127,4 @@ WORKDIR /opt/oai-gnb
+ 
+ COPY --from=gnb-base /tini /tini
+ ENTRYPOINT ["/tini", "-v", "--", "/opt/oai-gnb/bin/entrypoint.sh"]
+-CMD ["/opt/oai-gnb/bin/nr-softmodem"]
++CMD ["/opt/oai-gnb/bin/nr-softmodem", "-O", "/opt/oai-gnb/etc/gnb.conf"]
+diff --git a/radio/CMakeLists.txt b/radio/CMakeLists.txt
+index fb9086e2eb..1a7757e6ac 100644
+--- a/radio/CMakeLists.txt
++++ b/radio/CMakeLists.txt
+@@ -37,3 +37,8 @@ add_boolean_option(OAI_USRP OFF "Activate OAI's USRP driver" OFF)
+ if(OAI_USRP)
+   add_subdirectory(USRP)
+ endif()
++
++add_boolean_option(OAI_ANTSDR OFF "Activate OAI's ANTSDR driver" OFF)
++if(OAI_ANTSDR)
++  add_subdirectory(USRP)
++endif()
+\ No newline at end of file
