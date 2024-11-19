@@ -280,6 +280,8 @@ function main() {
                     ;;
                 "ANTSDR")
                      HW="OAI_"$2
+                     TARGET_LIST="$TARGET_LIST oai_usrpdevif" # ,, makes lowercase
+                     CMAKE_CMD="$CMAKE_CMD -DOAI_$2=ON"
                     ;;
                 "SIMU")
                     HW="OAI_"$2
